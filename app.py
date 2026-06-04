@@ -1,76 +1,74 @@
 import streamlit as st
-import requests
-from PIL import Image
-from io import BytesIO
+import tensorflow as tf
+from PIL import Image, ImageOps
+import numpy as np
+import os
 
-# Konfigurasi repositori GitHub kamu
-GITHUB_USER = "vgyfza-cell"
-GITHUB_REPO = "Image-Classification"
-FOLDER_PATH = "" 
+# --- KONFIGURASI HALAMAN ---
+st.set_page_config(page_title="Klasifikasi Ikan vs Kucing", page_icon="🐾")
 
-@st.cache_data
-def fetch_images_from_github():
-    # Menentukan URL API GitHub berdasarkan folder
-    if FOLDER_PATH:
-        api_url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{FOLDER_PATH}"
-    else:
-        api_url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents"
-        
-    try:
-        response = requests.get(api_url)
-        if response.status_code == 200:
-            contents = response.json()
-            dataset = {}
-            # Format gambar yang diizinkan
-            valid_extensions = ('.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG')
-            for item in contents:
-                if item['type'] == 'file' and item['name'].endswith(valid_extensions):
-                    dataset[item['name']] = item['download_url']
-            return dataset
-    except:
-        return {}
-    return {}
+st.title("🐟 Klasifikasi Gambar: Ikan atau Kucing? 🐈")
+st.write("Upload model .h5 kamu dan gambar yang ingin ditebak!")
 
-def load_image_from_url(url):
-    try:
-        res = requests.get(url)
-        if res.status_code == 200:
-            return Image.open(BytesIO(res.content))
-    except:
-        return None
-    return None
+# --- BAGIAN 1: UPLOAD MODEL ---
+st.sidebar.header("Pengaturan Model")
+uploaded_model = st.sidebar.file_uploader("1. Upload Model (.h5)", type=["h5"])
 
-# --- Tampilan Aplikasi Streamlit ---
-st.set_page_config(page_title="Klasifikasi Gambar", page_icon="🖼️")
-st.title("📸 Aplikasi Klasifikasi Gambar")
-st.write("Memuat data gambar langsung dari repositori GitHub...")
+# --- BAGIAN 2: UPLOAD GAMBAR ---
+uploaded_image = st.file_uploader("2. Upload Gambar (Ikan/Kucing)", type=["jpg", "png", "jpeg"])
 
-# Ambil list dataset gambar dari GitHub
-image_dataset = fetch_images_from_github()
-
-if image_dataset:
-    # Dropdown pilihan file gambar
-    pilihan_gambar = st.selectbox("Silahkan pilih gambar dari GitHub:", list(image_dataset.keys()))
+# Fungsi untuk memproses gambar agar sesuai dengan input model
+def import_and_predict(image_data, model):
+    # Sesuaikan ukuran target_size dengan saat kamu melatih model (misal 150x150 atau 224x224)
+    size = (150, 150) 
+    image = ImageOps.fit(image_data, size, Image.Resampling.LANCZOS)
+    image = np.asarray(image)
     
-    # Ambil URL mentah gambar yang dipilih
-    url_gambar = image_dataset.get(pilihan_gambar)
+    # Normalisasi (jika saat latihan model kamu membagi 255)
+    img_reshape = image.astype('float32') / 255.0
+    img_reshape = np.expand_dims(img_reshape, axis=0) # Ubah ke bentuk (1, 150, 150, 3)
     
-    if url_gambar:
-        # Load gambar menggunakan fungsi yang aman
-        img = load_image_from_url(url_gambar)
+    prediction = model.predict(img_reshape)
+    return prediction
+
+if uploaded_model is not None:
+    # Simpan model sementara ke lokal agar bisa dibaca Keras
+    with open("temp_model.h5", "wb") as f:
+        f.write(uploaded_model.getbuffer())
+    
+    # Load model
+    with st.spinner('Memuat Model...'):
+        model = tf.keras.models.load_model("temp_model.h5")
+    st.sidebar.success("Model Berhasil Dimuat!")
+
+    if uploaded_image is not None:
+        # Tampilkan gambar yang diupload
+        image = Image.open(uploaded_image)
+        st.image(image, caption='Gambar yang diupload', use_container_width=True)
         
-        if img is not None:
-            # Tampilkan gambar di web Streamlit
-            st.image(img, caption=f"File: {pilihan_gambar}", use_container_width=True)
-            
-            # Tombol untuk melakukan klasifikasi
-            if st.button("Jalankan Klasifikasi", type="primary"):
-                with st.spinner('Sedang menganalisis gambar...'):
-                    # Output sementara sebelum kamu memasukkan model AI aslimu
-                    st.success(f"Hasil Klasifikasi Terdeteksi untuk objek pada file: {pilihan_gambar}")
-        else:
-            st.error("Gagal mengubah data biner menjadi gambar PIL.")
-    else:
-        st.error("URL gambar tidak ditemukan.")
+        # Tombol Prediksi
+        if st.button("Tentukan Sekarang!", type="primary"):
+            with st.spinner('Menganalisis...'):
+                prediction = import_and_predict(image, model)
+                
+                # LOGIKA PENENTUAN KELAS
+                # Asumsi: Model kamu menggunakan sigmoid (1 output) 
+                # atau softmax (2 output). Ini logika umum:
+                if len(prediction[0]) > 1: # Jika output 2 (Softmax)
+                    hasil = np.argmax(prediction)
+                else: # Jika output 1 (Sigmoid)
+                    hasil = 1 if prediction[0][0] > 0.5 else 0
+                
+                # Mapping Label (Sesuaikan urutan saat kamu training)
+                # Contoh: 0 = Ikan, 1 = Kucing
+                class_names = ["Ikan", "Kucing"]
+                
+                st.write("---")
+                st.subheader(f"Hasil Prediksi: **{class_names[hasil]}**")
+                st.write(f"Tingkat Keyakinan: {np.max(prediction)*100:.2f}%")
 else:
-    st.error("Tidak ditemukan file gambar (.jpg/.png) di repository atau akses API GitHub dibatasi.")
+    st.info("Silahkan upload file model (.h5) kamu di sidebar sebelah kiri untuk memulai.")
+
+# Footer
+st.markdown("---")
+st.caption("Pastikan ukuran input model kamu adalah 150x150. Jika berbeda, edit kodingan pada bagian target_size.")
